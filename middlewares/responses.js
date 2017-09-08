@@ -7,7 +7,8 @@ const { UserDataException } = require('../lib/customExceptions');
 const SurveyResponse = require('../models/surveyResponse');
 
 const authApiClient = Auth0ApiClient(auth0);
-const resetPasswordEmail = 'Please reset your Kauffman FastTrac account by clicking the link: ';
+const resetPasswordEmail =
+  'Please reset your Kauffman FastTrac account by clicking the link: ';
 
 const approveResponse = (req, res, next) => {
   const { access_token: accessToken } = req.session.token;
@@ -36,9 +37,7 @@ const approveResponse = (req, res, next) => {
 
 const isApprovedOrRejected = ({ status }) =>
   status &&
-  ((status.accountCreated &&
-    status.sentPasswordReset) ||
-    status.rejected);
+  ((status.accountCreated && status.sentPasswordReset) || status.rejected);
 
 /**
  * Function does all the approval logic through the chain of promises.
@@ -55,51 +54,36 @@ const isApprovedOrRejected = ({ status }) =>
  * @param {number} responseId used to fetch response data from db
  * @param {string} token fetched from session, used to login current user into edX
  */
-const doApproveResponse = (emailContent, responseId, token, req) => {
-  let account;
-  let data;
-  let surveyResponse;
+const doApproveResponse = async (emailContent, responseId, token, req) => {
+  const data = await surveyGizmo.getResponseData(responseId);
+  const email = data.questions['Submitter Email'];
+  let response = await SurveyResponse.findOne({
+    'questions.Submitter Email': email
+  });
 
-  return surveyGizmo
-    .getResponseData(responseId)
-    .then(responseData => {
-      data = responseData;
-      const submitterEmail = data.questions['Submitter Email'];
+  if (!response) {
+    response = new SurveyResponse();
+  }
 
-      return authApiClient.createUser(submitterEmail, 'passverd');
-    })
-    .then(() => SurveyResponse.findOne({
-      'questions.Submitter Email': data.questions['Submitter Email']
-    }))
-    .then(response => {
-      if (!response) {
-        surveyResponse = new SurveyResponse();
-      } else {
-        surveyResponse = response;
-      }
-    })
-    .then(() => surveyResponse.setData(data))
-    .then(() => EdxApi.createAccount(surveyResponse.questions))
-    .catch(UserDataException, exception => {
-      throw exception;
-    })
-    .then(async ({ isCreated, form }) => {
-      // eslint-disable-line consistent-return
-      account = form;
+  try {
+    await authApiClient.createUser(email, 'passverd');
+    await response.setAccountCreated();
+  } catch (e) {
+    console.log('Failed to create user.\n', e.stack);
+  }
+  await response.setData(data);
 
-      if (isCreated) {
-        const resetPasswordLink = await authApiClient.getResetPasswordLink(account.email);
-        const resetPasswordEmailContent = `${resetPasswordEmail} ${resetPasswordLink}`;
-        return sendResetPasswordEmail(account.email, resetPasswordEmailContent)
-          .then(() => sendApprovalEmail(account.email, emailContent))
-          .then(() => surveyResponse.setSentPasswordReset());
-      }
+  const resetPasswordEmail = `${resetPasswordEmail} ${await authApiClient.getResetPasswordLink(
+    email
+  )}`;
 
-      return sendApprovalEmail(account.email, emailContent);
-    })
-    .then(() => surveyResponse.setAccountCreated())
-    .then(() => EdxApi.createAffiliateEntity(req, surveyResponse.questions))
-    .then(() => surveyResponse);
+  await sendResetPasswordEmail(email, resetPasswordEmail);
+  await sendApprovalEmail(email, emailContent);
+  await response.setSentPasswordReset();
+
+  await EdxApi.createAffiliateEntity(req, response.questions);
+
+  return response;
 };
 
 const sendResetPasswordEmail = (email, content) =>
@@ -115,7 +99,7 @@ const sendApprovalEmail = (email, content) =>
     to: email,
     subject: 'Kauffman FastTrac Affiliate Approval',
     text: content,
-    html: content,
+    html: content
   });
 
 const rejectResponse = (req, res, next) => {
@@ -131,7 +115,7 @@ const rejectResponse = (req, res, next) => {
     .then(() =>
       SurveyResponse.findOne({
         'questions.Submitter Email': data.questions['Submitter Email']
-      }),
+      })
     )
     .then(response => {
       if (!response) {
